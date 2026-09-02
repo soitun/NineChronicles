@@ -650,6 +650,16 @@ namespace Nekoyume.IAPStore
 
                     PurchaseCountRefresh(sku);
 
+                    // 완료 팝업을 띄우기 **전에**, 애니메이션 없이 닫는다.
+                    //
+                    // 같은 프레임에 완료 팝업을 띄우면서 닫으면 닫힘 애니메이션이 끝나지 않아
+                    // Widget 의 `_isClosed` 만 true 로 남고 GameObject 는 활성 상태로 화면에 남는다.
+                    // 그 뒤로는 Close() 가 `if (_isClosed && !ignoreCloseAnimation) return;` 에서
+                    // 즉시 빠져나가 X 버튼을 눌러도 닫히지 않고, WidgetStack 에서는 이미 빠졌으므로
+                    // 레이캐스트 차단막만 남아 다른 버튼도 눌리지 않는다.
+                    Widget.Find<ShopListPopup>()?.Close(true);
+                    Widget.Find<MobileShop>()?.RefreshGrid();
+
                     if (_initializedProductSchema.TryGetValue(sku, out var product) && product.Mileage > 0)
                     {
                         popup.Show(
@@ -682,8 +692,6 @@ namespace Nekoyume.IAPStore
                         }
                     };
 
-                    Widget.Find<MobileShop>()?.RefreshGrid();
-                    Widget.Find<ShopListPopup>()?.Close();
                 }
             }
             catch (Exception exc)
@@ -724,6 +732,16 @@ namespace Nekoyume.IAPStore
                     Widget.Find<MobileShop>()?.PurchaseComplete(sku);
                     PurchaseCountRefresh(sku);
 
+                    // 완료 팝업을 띄우기 **전에**, 애니메이션 없이 닫는다.
+                    //
+                    // 같은 프레임에 완료 팝업을 띄우면서 닫으면 닫힘 애니메이션이 끝나지 않아
+                    // Widget 의 `_isClosed` 만 true 로 남고 GameObject 는 활성 상태로 화면에 남는다.
+                    // 그 뒤로는 Close() 가 `if (_isClosed && !ignoreCloseAnimation) return;` 에서
+                    // 즉시 빠져나가 X 버튼을 눌러도 닫히지 않고, WidgetStack 에서는 이미 빠졌으므로
+                    // 레이캐스트 차단막만 남아 다른 버튼도 눌리지 않는다.
+                    Widget.Find<ShopListPopup>()?.Close(true);
+                    Widget.Find<MobileShop>()?.RefreshGrid();
+
                     if(_initializedProductSchema.TryGetValue(sku, out var product) && product.Mileage > 0)
                     {
                         popup.Show(
@@ -756,8 +774,6 @@ namespace Nekoyume.IAPStore
                         }
                     };
 
-                    Widget.Find<MobileShop>()?.RefreshGrid();
-                    Widget.Find<ShopListPopup>()?.Close();
                 }
             }
             catch (Exception exc)
@@ -833,6 +849,16 @@ namespace Nekoyume.IAPStore
                             ("result", "Complete"),
                             ("transaction-id", e.purchasedProduct.transactionID));
 
+                        // 완료 팝업을 띄우기 **전에**, 애니메이션 없이 닫는다.
+                        //
+                        // 같은 프레임에 완료 팝업을 띄우면서 닫으면 닫힘 애니메이션이 끝나지 않아
+                        // Widget 의 `_isClosed` 만 true 로 남고 GameObject 는 활성 상태로 화면에 남는다.
+                        // 그 뒤로는 Close() 가 `if (_isClosed && !ignoreCloseAnimation) return;` 에서
+                        // 즉시 빠져나가 X 버튼을 눌러도 닫히지 않고, WidgetStack 에서는 이미 빠졌으므로
+                        // 레이캐스트 차단막만 남아 다른 버튼도 눌리지 않는다.
+                        Widget.Find<ShopListPopup>()?.Close(true);
+                        Widget.Find<MobileShop>()?.RefreshGrid();
+
                         if (_initializedProductSchema.TryGetValue(e.purchasedProduct.definition.id, out var product) && product.Mileage > 0)
                         {
                             popup.Show(
@@ -865,8 +891,6 @@ namespace Nekoyume.IAPStore
                             }
                         };
 
-                        Widget.Find<MobileShop>()?.RefreshGrid();
-                        Widget.Find<ShopListPopup>()?.Close();
                         _controller.ConfirmPendingPurchase(e.purchasedProduct);
                         RemoveLocalTransactions(e.purchasedProduct.transactionID);
                     }
