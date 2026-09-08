@@ -46,6 +46,16 @@ on:
         type: boolean
         required: false
         default: false
+      onestore:
+        description: "원스토어 빌드로 만든다 (ONESTORE 심볼을 켠다). Google Play 업로드는 건너뛴다"
+        type: boolean
+        required: false
+        default: false
+      onestore-dev-option:
+        description: "원스토어 테스트 환경. 비우면 상용. ex(onestore_03 = ONE Billing Lab 샌드박스)"
+        type: string
+        required: false
+        default: ""
 
 concurrency: 
   group: ${{ github.workflow }}-${{ github.ref_name }}-${{ github.event.inputs.player-name }}
@@ -59,6 +69,8 @@ env:
 jobs:
   build:
     name: Build for ${{ matrix.targetPlatform }}
+    # 원스토어만 뽑는 수동 실행이면 구글 빌드는 건너뛴다.
+    if: github.event.inputs.onestore != 'true'
     runs-on:
       group: linux-8cores
     defaults:
@@ -191,8 +203,186 @@ jobs:
           retention-days: 7
           if-no-files-found: error
 
+  build-onestore:
+    name: Build for ${{ matrix.targetPlatform }} (ONE Store)
+    # 릴리즈 브랜치·태그에서는 구글 빌드와 함께 자동으로 뽑고,
+    # 그 밖에는 onestore 를 켠 수동 실행에서만 뽑는다.
+    if: >-
+      startsWith(github.ref, 'refs/heads/release/')
+      || startsWith(github.event.ref, 'refs/tags/')
+      || github.event.inputs.onestore == 'true'
+    runs-on:
+      group: linux-8cores
+    defaults:
+        run:
+          shell: bash
+    strategy:
+      matrix:
+        projectPath:
+          - nekoyume
+        targetPlatform:
+          - Android
+    environment: |-
+      ${{ github.event.inputs.other-google-services == 'true' && 'k'
+      || github.ref_name == 'main' && 'main'
+      || startsWith(github.ref_name, 'release/') == 'true' && 'internal'
+      || '' }}
+    env:
+      GOOGLE_SERVICES_JSON: ${{ secrets.GOOGLE_SERVICES_JSON }}
+
+    steps:
+      - name: Set CRLF
+        run: |
+          git config --global core.autocrlf true
+
+      - uses: actions/checkout@v3
+        with:
+          lfs: true
+          submodules: true
+
+      # 스크립팅 심볼이 다르면 Unity 가 어차피 전부 다시 컴파일한다. 구글 빌드와 키를 공유하면
+      # 두 잡이 서로의 캐시를 덮어써서 매번 재컴파일이 나므로 따로 둔다.
+      - uses: actions/cache@v3
+        with:
+          path: ${{ matrix.projectPath }}/Library
+          key: Library-${{ matrix.projectPath }}-ubuntu-${{ matrix.targetPlatform }}-onestore
+          restore-keys: |
+            Library-${{ matrix.projectPath }}-ubuntu-${{ matrix.targetPlatform }}-onestore
+            Library-${{ matrix.projectPath }}-ubuntu-
+            Library-
+
+      - name: Copy clo.json
+        run: |
+          if [ -n "${{ github.event.inputs.clo }}" ]; then
+            echo ${{ github.event.inputs.clo }} > ${{ matrix.projectPath }}/Assets/StreamingAssets/clo.json
+          fi
+
+      - name: Decode google-services.json File
+        run: |
+          echo "$GOOGLE_SERVICES_JSON" | base64 -d > ${{ matrix.projectPath }}/Assets/NineChronicles/GoogleServices/google-services.json
+
+      - name: Resolve AAR files
+        run: |
+          if [ '${{ github.event.inputs.other-google-services }}' == 'true' ]; then
+            sudo \cp -R ${{ matrix.projectPath }}/ResolvedAAR/. ${{ matrix.projectPath }}/Assets/Plugins/Android/
+          fi
+
+      - name: Change cloudProjectId in ProjectSettings.asset
+        run: |
+          if [ -n "${{ github.event.inputs.cloud-project-id }}" ]; then
+            sed -i '/cloudProjectId/c\  cloudProjectId: ${{ github.event.inputs.cloud-project-id }}' ${{ matrix.projectPath }}/ProjectSettings/ProjectSettings.asset
+            cat ${{ matrix.projectPath }}/ProjectSettings/ProjectSettings.asset
+          fi
+      # 스크립팅 심볼은 컴파일 시점에 정해진다. unity-builder 가 Unity 를 띄우면 그 안에서
+      # 이미 컴파일이 끝나므로, -executeMethod 로 심볼을 켜도 #if ONESTORE 가 먹지 않는다.
+      # 그래서 위의 cloudProjectId 와 같은 방식으로 빌드 전에 파일을 고친다.
+      #
+      # 맨 위 Set CRLF 때문에 체크아웃이 CRLF 다. `.*` 가 줄 끝 CR 까지 삼키면 ;ONESTORE 가
+      # CR **뒤에** 붙어 앞 심볼 끝에 CR 이 남는다. 스크립트 컴파일은 그대로 통과하므로
+      # 한참 뒤 Burst 가 그 인자를 못 읽고 죽는다(Unexpected arguments). CR 은 줄 끝에 그대로 둔다.
+      - name: Enable ONESTORE define
+        run: |
+          set -euo pipefail
+          f='${{ matrix.projectPath }}/ProjectSettings/ProjectSettings.asset'
+          # 파일에 "    Android:" 로 시작하는 줄이 여럿이라 범위를 심볼 블록으로 한정한다.
+          sed -i -E '/^  scriptingDefineSymbols:/,/^  additionalCompilerArguments:/ s/^(    Android: .*[^[:cntrl:]])(\r?)$/\1;ONESTORE\2/' "$f"
+          line=$(awk '/^  scriptingDefineSymbols:/{f=1} f && /^    Android: /{print; exit}' "$f")
+          body=${line%$'\r'}
+          printf '%s\n' "$body"
+          case "$body" in
+            *$'\r'*) echo "심볼 사이에 CR 이 남았다. Burst 가 죽는다"; exit 1 ;;
+            *';ONESTORE') ;;
+            *) echo "ONESTORE 심볼 주입 실패"; exit 1 ;;
+          esac
+
+      - name: Enable ONE Store dev option
+        if: ${{ github.event.inputs.onestore-dev-option != '' }}
+        run: |
+          set -euo pipefail
+          f='${{ matrix.projectPath }}/Assets/Plugins/Android/AndroidManifest.xml'
+          opt='${{ github.event.inputs.onestore-dev-option }}'
+          sed -i 's|<!-- <meta-data android:name="onestore:dev_option" [^>]*/> -->|<meta-data android:name="onestore:dev_option" android:value="'"$opt"'" />|' "$f"
+          grep -q "android:name=\"onestore:dev_option\" android:value=\"$opt\"" "$f" \
+            || { echo "dev_option 주입 실패"; exit 1; }
+          echo "dev_option = $opt (테스트 환경이다. 상용 제출본에 쓰지 말 것)"
+
+      - uses: game-ci/unity-builder@v4
+        with:
+          androidKeystoreName: 9c-aos-signing-keystore.keystore # This file won't exist, but this property needs to exist.
+          androidKeystoreBase64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          androidKeystorePass: ${{ secrets.ANDROID_KEYSTORE_PASS }}
+          androidKeyaliasName: ${{ secrets.ANDROID_KEY_ALIAS_NAME }}
+          androidKeyaliasPass: ${{ secrets.ANDROID_KEY_ALIAS_PASS }}
+          androidExportType: 'androidAppBundle'
+          projectPath: ${{ matrix.projectPath }}
+          targetPlatform: ${{ matrix.targetPlatform }}
+          buildMethod: 'NekoyumeEditor.Builder.Build${{ matrix.targetPlatform }}'
+          buildName: ${{ matrix.targetPlatform }}
+          androidVersionCode: ${{ github.event.inputs.version-code }}
+          version: ${{ github.event.inputs.app-version }}
+          androidTargetSdkVersion: AndroidApiLevel36
+          customParameters: -identifier ${{ github.event.inputs.package-name }} -playerName ${{ github.event.inputs.player-name }}
+          allowDirtyBuild: true
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: 3.11.0
+
+      - name: Install bundletool
+        run: |
+          tr -d "\r" < .github/bin/install-bundletool.sh > .github/bin/install-bundletool-trimed.sh
+          bash .github/bin/install-bundletool-trimed.sh /tmp
+
+      - name: Setup Keystore and Passwords
+        run: |
+          echo "${{ secrets.ANDROID_KEYSTORE_BASE64 }}" | base64 -d > /tmp/9c-signing-keystore.keystore
+          echo "${{ secrets.ANDROID_KEYSTORE_PASS }}" > /tmp/keystore.pwd
+          echo "${{ secrets.ANDROID_KEY_ALIAS_NAME }}" > /tmp/keyalias.name
+          echo "${{ secrets.ANDROID_KEY_ALIAS_PASS }}" > /tmp/keyalias.pwd
+
+      - name: Set up Java
+        uses: actions/setup-java@v2
+        with:
+          distribution: 'temurin'
+          java-version: '11'
+
+      - name: Print file content
+        run: ls -R $GITHUB_WORKSPACE/build
+
+      - name: Move Folder
+        run: |
+          sudo mv $GITHUB_WORKSPACE/build /tmp/player
+
+      - name: Convert AAB to APKS
+        run: |
+          sudo java -jar /tmp/bundletool-all-*.jar build-apks --bundle="/tmp/player/Android/android-build.aab" --output="/tmp/player/Android/result.apks" --ks="/tmp/9c-signing-keystore.keystore" --ks-pass=file:/tmp/keystore.pwd --ks-key-alias=$(cat /tmp/keyalias.name) --key-pass=file:/tmp/keyalias.pwd --mode=universal --local-testing
+
+      - name: Pack
+        run: |
+          targetPlatform=${{ matrix.targetPlatform }}
+
+          tr -d "\r" < .github/bin/pack.sh > .github/bin/pack_trimed.sh
+          rm .github/bin/pack.sh
+          mv .github/bin/pack_trimed.sh .github/bin/pack.sh
+
+          pip3 install wheel
+          sudo bash .github/bin/pack.sh \
+          /tmp/packages \
+          "${{ matrix.targetPlatform }}" \
+          "/tmp/player"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Build-${{ matrix.targetPlatform }}-OneStore
+          path: /tmp/packages
+          retention-days: 7
+          if-no-files-found: error
+
   extract:
-    if: startsWith(github.ref, 'refs/heads/release/') || startsWith(github.event.ref, 'refs/tags/')
+    if: >-
+      (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.event.ref, 'refs/tags/'))
+      && github.event.inputs.onestore != 'true'
     needs: build
     runs-on: ubuntu-latest
     outputs:
@@ -211,7 +401,9 @@ jobs:
           fi
 
   release-to-google-play:
-    if: startsWith(github.ref, 'refs/heads/release/') || startsWith(github.event.ref, 'refs/tags/')
+    if: >-
+      (startsWith(github.ref, 'refs/heads/release/') || startsWith(github.event.ref, 'refs/tags/'))
+      && github.event.inputs.onestore != 'true'
     name: Release to the Google Play Store
     runs-on: ubuntu-latest
     needs: ["extract"]
